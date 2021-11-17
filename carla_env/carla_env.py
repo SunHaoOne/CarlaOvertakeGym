@@ -11,7 +11,7 @@ import carla
 import time
 import random
 # 导入这个异步或者同步模式的类
-from carla_sync_mode import CarlaSyncMode
+from carla_env.carla_sync_mode import CarlaSyncMode
 from carla import ColorConverter as cc
 
 # 最好把所有的内容都写到一个文件中，建议这种写法比较清晰的可读性

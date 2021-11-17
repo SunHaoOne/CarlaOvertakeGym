@@ -4,7 +4,7 @@ from gym.envs.registration import register
 register(
     id='CarlaEnv-state-v1',
     entry_point='carla_env.carla_env:CarlaOvertakeEnv',
-    max_episode_steps=50000,
+    max_episode_steps=150,
     kwargs={
         'carla_port': 2000,
         'frame_skip': 1,
@@ -16,7 +16,7 @@ register(
 register(
     id='CarlaEnv-pixel-v1',
     entry_point='carla_env.carla_env:CarlaOvertakeEnv',
-    max_episode_steps=50000,
+    max_episode_steps=150,
     kwargs={
         'carla_port': 2000,
         'frame_skip': 8,

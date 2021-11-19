@@ -1,6 +1,7 @@
 import gym
 from gym import spaces
 import numpy as np
+import pygame
 import sys
 try:
     sys.path.append(r'D:\下载\WindowsNoEditor\PythonAPI\carla\dist\carla-0.9.10-py3.7-win-amd64.egg')
@@ -11,7 +12,7 @@ import carla
 import time
 import random
 # 导入这个异步或者同步模式的类
-from carla_env.carla_sync_mode import CarlaSyncMode
+from carla_sync_mode import CarlaSyncMode
 from carla import ColorConverter as cc
 
 # 最好把所有的内容都写到一个文件中，建议这种写法比较清晰的可读性
@@ -32,6 +33,14 @@ class CarlaOvertakeEnv(gym.Env):
         self.map_name = map_name
         self.observations_type = observations_type
         self.frame_skip = frame_skip
+        self.render_display = True
+
+
+        if self.render_display:
+            pygame.init()
+            self.render_display = pygame.display.set_mode((800, 600), pygame.HWSURFACE | pygame.DOUBLEBUF)
+            self.font = get_font()
+            self.clock = pygame.time.Clock()
 
         # [spawn_ego_location, spawn_actor_location]
         self.spawn_loc =  [carla.Transform(carla.Location(-88.5, -70.0, 0.1), carla.Rotation(yaw=90)),
@@ -70,8 +79,20 @@ class CarlaOvertakeEnv(gym.Env):
             obs = self._get_state_obs()
         else:
             obs = np.zeros((3, 84, 84))
-
+        '''
+        
+    Box means that you are dealing with real valued quantities.
+    
+    The first array np.array([-1,0,0] are the lowest accepted values, and the second np.array([+1,+1,+1]) are the highest accepted values. In this case (using the comment) we see that we have 3 available actions:
+    
+    Steering: Real valued in [-1, 1]
+    Gas: Real valued in [0, 1]
+    Brake: Real valued in [0, 1]
+    # we set brake 0,1 steer -1,1
+    https://github.com/openai/gym/blob/master/gym/spaces/box.py
+        '''
         # gym environment specific variables
+        #self.action_space = spaces.Box(np.array([0.2,-1]),np.array([1,1]), dtype='float32')
         self.action_space = spaces.Box(-1., 1., shape=(2,), dtype='float32')
         self.obs_dim = obs.shape
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=self.obs_dim, dtype='float32')
@@ -96,6 +117,7 @@ class CarlaOvertakeEnv(gym.Env):
         vehicle_num = 0
         sensor_num = 0
 
+        self.world.tick()
         for vehicle in actor_list.filter('*vehicle*'):
             vehicle_num += 1
             vehicle.destroy()
@@ -131,18 +153,26 @@ class CarlaOvertakeEnv(gym.Env):
         self.actor_list.append(self.ego)
         self.actor_list.append(self.actor)
 
-        # whether to save images if we are recording
-        self.recording = False
 
-        # this is the case [1]
-        self.cam_bp = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
-        self.cam_bp.set_attribute("image_size_x", str(84))
-        self.cam_bp.set_attribute("image_size_y", str(84))
-        self.cam_bp.set_attribute("fov", str(105))
-        self.cam_bp.set_attribute("sensor_tick", str(1 / 30))
+
+        # spawn camera for rendering
+        if self.render_display:
+            self.camera_display = self.world.spawn_actor(
+                self.world.get_blueprint_library().find('sensor.camera.rgb'),
+                carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)),
+                attach_to=self.ego)
+
+
+        if self.observations_type == 'pixel':
+            # this is the case [1]
+            self.cam_bp = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
+            self.cam_bp.set_attribute("image_size_x", str(84))
+            self.cam_bp.set_attribute("image_size_y", str(84))
+            self.cam_bp.set_attribute("fov", str(105))
+            self.cam_bp.set_attribute("sensor_tick", str(1 / 30))
 
         cam_transform = carla.Transform(carla.Location(6, 0, 10), carla.Rotation(-90, 0, 0))
-        self.camera = self.world.spawn_actor(self.cam_bp, cam_transform, attach_to=self.ego)
+        self.camera_vision = self.world.spawn_actor(self.cam_bp, cam_transform, attach_to=self.ego)
 
 
         # collision detection
@@ -153,17 +183,20 @@ class CarlaOvertakeEnv(gym.Env):
         self.collision_sensor.listen(self.collision_callback)
 
         # Add the camera and collision sensor to the actor list
-        self.actor_list.append(self.camera)
+        self.actor_list.append(self.camera_display)
+        self.actor_list.append(self.camera_vision)
         self.actor_list.append(self.collision_sensor)
 
         ###############################################################################
 
-
-
-        # set Synchronous mode to ensure to get the full state message
-        if self.observations_type == 'pixel':
-            self.sync_mode = CarlaSyncMode(self.world, self.camera, fps=20)
-        elif self.observations_type == 'state':
+        # context manager initialization
+        if self.render_display and self.observations_type == 'pixel':
+            self.sync_mode = CarlaSyncMode(self.world, self.camera_display, self.camera_vision, fps=20)
+        elif self.render_display and self.observations_type == 'state':
+            self.sync_mode = CarlaSyncMode(self.world, self.camera_display, fps=20)
+        elif not self.render_display and self.observations_type == 'pixel':
+            self.sync_mode = CarlaSyncMode(self.world, self.camera_vision, fps=20)
+        elif not self.render_display and self.observations_type == 'state':
             self.sync_mode = CarlaSyncMode(self.world, fps=20)
         else:
             raise ValueError('Unknown observation_type. Choose between: state, pixel')
@@ -193,10 +226,6 @@ class CarlaOvertakeEnv(gym.Env):
                                                 carla.Rotation(yaw=90, pitch=-90)))
 
 
-
-    def _compute_action(self):
-        return self.agent.run_step()
-
     def step(self, action):
         rewards = []
         next_obs, done, info = np.array([]), False, {}
@@ -211,7 +240,10 @@ class CarlaOvertakeEnv(gym.Env):
 
     def _simulator_step(self, action):
 
-
+        if self.render_display:
+            if should_quit():
+                return
+            self.clock.tick()
 
         # calculate actions
         throttle_brake = float(action[0])
@@ -240,17 +272,38 @@ class CarlaOvertakeEnv(gym.Env):
             reverse=False,
             manual_gear_shift=False
         )
+
+        # advance the simulation and wait for the data
+        if self.render_display and self.observations_type == 'pixel':
+            snapshot, display_image, vision_image = self.sync_mode.tick(timeout=2.0)
+        elif self.render_display and self.observations_type == 'state':
+            snapshot, display_image = self.sync_mode.tick(timeout=2.0)
+        elif not self.render_display and self.observations_type == 'pixel':
+            snapshot, vision_image = self.sync_mode.tick(timeout=2.0)
+        elif not self.render_display and self.observations_type == 'state':
+            self.sync_mode.tick(timeout=2.0)
+        else:
+            raise ValueError('Unknown observation_type. Choose between: state, pixel')
+
+
         self.spectator.set_transform(carla.Transform(self.ego.get_transform().location + carla.Location(z=50),
                                                 carla.Rotation(yaw=90, pitch=-90)))
 
         self.ego.apply_control(vehicle_control)
         self.actor.apply_control(actor_control)
 
+        # draw the display
+        if self.render_display:
+            draw_image(self.render_display, display_image)
+            self.render_display.blit(self.font.render('Frame: %d' % self.count, True, (255, 255, 255)), (8, 10))
+            self.render_display.blit(self.font.render('Thottle: %f' % throttle, True, (255, 255, 255)), (8, 28))
+            self.render_display.blit(self.font.render('Steer: %f' % steer, True, (255, 255, 255)), (8, 46))
+            self.render_display.blit(self.font.render('Brake: %f' % brake, True, (255, 255, 255)), (8, 64))
+            #self.render_display.blit(self.font.render(str(self.weather), True, (255, 255, 255)), (8, 82))
+            pygame.display.flip()
 
-        if self.observations_type == 'pixel':
-            snapshot, vision_image = self.sync_mode.tick(timeout=5.0)
-        elif self.observations_type == 'state':
-            self.sync_mode.tick(timeout=5.0)
+
+
 
 
         # get reward and next observation
@@ -419,11 +472,35 @@ class CarlaOvertakeEnv(gym.Env):
 #### some utils for other things
 
 
+def draw_image(surface, image, blend=False):
+    array = np.frombuffer(image.raw_data, dtype=np.dtype('uint8'))
+    array = np.reshape(array, (image.height, image.width, 4))
+    array = array[:, :, :3]
+    array = array[:, :, ::-1]
+    image_surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    if blend:
+        image_surface.set_alpha(100)
+    surface.blit(image_surface, (0, 0))
+
 def vector_to_scalar(vector):
     scalar = np.around(np.sqrt(vector.x ** 2 +
                                vector.y ** 2 +
                                vector.z ** 2), 2)
     return scalar
 
+def get_font():
+    fonts = [x for x in pygame.font.get_fonts()]
+    default_font = 'ubuntumono'
+    font = default_font if default_font in fonts else fonts[0]
+    font = pygame.font.match_font(font)
+    return pygame.font.Font(font, 14)
 
+def should_quit():
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return True
+        elif event.type == pygame.KEYUP:
+            if event.key == pygame.K_ESCAPE:
+                return True
+    return False
 
